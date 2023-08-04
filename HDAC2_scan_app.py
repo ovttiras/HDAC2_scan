@@ -24,8 +24,7 @@ import joblib
 from IPython.display import HTML
 from molvs import standardize_smiles
 from math import pi
-import ipyspeck
-import ipywidgets 
+# import ipywidgets 
 import zipfile
 
 ######################
