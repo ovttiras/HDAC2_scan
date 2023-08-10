@@ -24,8 +24,8 @@ import joblib
 from IPython.display import HTML
 from molvs import standardize_smiles
 from math import pi
-# import ipywidgets 
 import zipfile
+
 
 ######################
 # Page Title
@@ -70,12 +70,23 @@ def rdkit_numpy_convert(f_vs):
         return np.asarray(output) 
 
 # LOAD MODELS
-load_model_SVM = pickle.load(open('Models/HDAC2_SVM_MF.pkl', 'rb'))
-import zipfile
-with zipfile.ZipFile('Models/Toxicity/LD50_rat_oral_SVM_MF.zip', 'r') as zip_file:
-    zf_tox=zip_file.extract('LD50_rat_oral_SVM_MF.pkl', '.')
+# HDAC2 activity models
+with zipfile.ZipFile('Models/HDAC2_SVM_MF.zip', 'r') as zip_file_svm:
+    zf_svm=zip_file_svm.extract('HDAC2_SVM_MF.pkl', '.')
+load_model_SVM=pickle.load(open(zf_svm,'rb'))
 
+with zipfile.ZipFile('Models/HDAC2_RF_MF.zip', 'r') as zip_file_rf:
+    zf_rf=zip_file_rf.extract('HDAC2_RF_MF.pkl', '.')
+load_model_RF=pickle.load(open(zf_rf,'rb'))
+
+# Toxicity models
+with zipfile.ZipFile('Models/Toxicity/LD50_rat_oral_SVM_MF.zip', 'r') as zip_file_svm_tox:
+    zf_tox=zip_file_svm_tox.extract('LD50_rat_oral_SVM_MF.pkl', '.')
 load_model_SVM_tox=pickle.load(open(zf_tox,'rb'))
+
+with zipfile.ZipFile('Models/Toxicity/LD50_rat_oral_GBR_MFP.zip', 'r') as zip_file_gbr_tox:
+    zf_tox_gbr=zip_file_gbr_tox.extract('LD50_rat_oral_GBR_MFP.pkl', '.')
+load_model_GBR_tox=pickle.load(open(zf_tox_gbr,'rb'))
 
 # load numpy array from csv file for hdac activity
 zf_hdac = zipfile.ZipFile('Models/x_tr_MF.zip') 
@@ -108,16 +119,6 @@ if files_option == 'SMILES':
         f_vs = [AllChem.GetMorganFingerprintAsBitVect(m, radius=2, nBits=1024, useFeatures=False, useChirality=False)]
         X = rdkit_numpy_convert(f_vs)
         # HDAC activity
-        #Predict activity
-        prediction_SVM = load_model_SVM.predict(X)
-              
-        # Estimination AD
-        neighbors_k_vs = pairwise_distances(x_tr, Y=X, n_jobs=-1)
-        neighbors_k_vs.sort(0)
-        similarity_vs = neighbors_k_vs
-        cpd_value_vs = similarity_vs[0, :]
-        cpd_AD_vs = np.where(cpd_value_vs <= model_AD_limit, "Inside AD", "Outside AD")
-
         # search experimental value
         if inchi in res:
            exp=round(res[inchi][0]['pchembl_value_mean'],2)           
@@ -127,24 +128,40 @@ if files_option == 'SMILES':
            cpd_AD_vs='-'
             
         else:
-            y_pred_con= prediction_SVM[0]
+            # predict activity
+            prediction_RF = load_model_RF.predict(X)
+            prediction_SVM = load_model_SVM.predict(X)
+            y_pred_con=(prediction_RF+prediction_SVM)/2
+            y_pred_con=round((y_pred_con[0]), 3)
+                                    
+            # Estimination AD
+            neighbors_k_vs = pairwise_distances(x_tr, Y=X, n_jobs=-1)
+            neighbors_k_vs.sort(0)
+            similarity_vs = neighbors_k_vs
+            cpd_value_vs = similarity_vs[0, :]
+            cpd_AD_vs = np.where(cpd_value_vs <= model_AD_limit, "Inside AD", "Outside AD")
+           
+            # result
             cpd_AD_vs=cpd_AD_vs[0]
             exp="-"
             std="-"
             chembl_id="not detected"
         
         # Toxicity
-        #Predict toxicity
-        prediction_SVM_tox = load_model_SVM_tox.predict(X)
+       
         # search experimental toxicity value
-        if smiles in res_tox:
-           exp_tox=str(res_tox[smiles][0]['TOX_VALUE'])
-           cas_id=str(res_tox[smiles][0]['CAS_Number'])
+        if inchi in res_tox:
+           exp_tox=str(res_tox[inchi][0]['TOX_VALUE'])
+           cas_id=str(res_tox[inchi][0]['CAS_Number'])
            value_ped_tox='see experimental value'
            cpd_AD_vs_tox='-'
             
         else:
-            y_pred_con_tox_t=prediction_SVM_tox[0]
+             #Predict toxicity
+            prediction_SVM_tox = load_model_SVM_tox.predict(X)
+            prediction_GBR_tox = load_model_GBR_tox.predict(X)
+            y_pred_con_tox=(prediction_SVM_tox+prediction_GBR_tox)/2
+            y_pred_con_tox_t=y_pred_con_tox[0]
             MolWt=ExactMolWt(Chem.MolFromSmiles(smiles))
             value_ped_tox=str(round((10**(y_pred_con_tox_t*-1)*1000)*MolWt, 4))
              # Estimination AD for toxicity
@@ -170,7 +187,7 @@ if files_option == 'SMILES':
 if files_option == '*CSV file containing SMILES':
      
     # Read SMILES input
-    uploaded_file = st.file_uploader('The file should contain a column with the name "SMILES"')
+    uploaded_file = st.file_uploader('The file should contain only one column with the name "SMILES"')
     if uploaded_file is not None:
         df_ws=pd.read_csv(uploaded_file, sep=';')
         count=0
@@ -216,8 +233,8 @@ if files_option == '*CSV file containing SMILES':
                 inchi = str(Chem.MolToInchi(m))
                 struct.append(i)
                 if inchi in res:
-                    exp.append(str(res[inchi][0]['pchembl_value_mean']))
-                    std.append(round(res[inchi][0]['pchembl_value_std'],4))
+                    exp.append(round((res[inchi][0]['pchembl_value_mean']), 2))
+                    std.append(round((res[inchi][0]['pchembl_value_std']), 3))
                     chembl_id.append(str(res[inchi][0]['molecule_chembl_id']))
                     y_pred_con.append('see experimental value')
                     cpd_AD_vs.append('-')
@@ -229,8 +246,10 @@ if files_option == '*CSV file containing SMILES':
                     f_vs = [AllChem.GetMorganFingerprintAsBitVect(m, radius=2, nBits=1024, useFeatures=False, useChirality=False)]
                     X = rdkit_numpy_convert(f_vs)
                     #Predict activity
-                    rediction_SVM = load_model_SVM.predict(X)                                     
-                    y_pred_con.append(round(float(rediction_SVM),3))
+                    prediction_RF = load_model_RF.predict(X)
+                    prediction_SVM = load_model_SVM.predict(X)
+                    prediction=(prediction_RF+prediction_SVM)/2                                  
+                    y_pred_con.append(round(float(prediction),3))
                     # Estimination AD
                     neighbors_k_vs = pairwise_distances(x_tr, Y=X, n_jobs=-1)
                     neighbors_k_vs.sort(0)
@@ -262,10 +281,15 @@ if files_option == '*CSV file containing SMILES':
                     neighbors_k_vs_tox.sort(0)
                     similarity_vs_tox = neighbors_k_vs_tox
                     cpd_value_vs_tox = similarity_vs_tox[0, :]
-                    cpd_AD_vs_tox_r = np.where(cpd_value_vs_tox <= model_AD_limit_tox, "Inside AD", "Outside AD")                    
-                    prediction_SVM_tox = load_model_SVM_tox.predict(X_tox)                    
+                    cpd_AD_vs_tox_r = np.where(cpd_value_vs_tox <= model_AD_limit_tox, "Inside AD", "Outside AD")
+
+                    # calculate toxicity  
+
+                    prediction_SVM_tox = load_model_SVM_tox.predict(X_tox)
+                    prediction_GBR_tox = load_model_GBR_tox.predict(X_tox)
+                    y_pred_tox=(prediction_SVM_tox+prediction_GBR_tox)/2                            
                     MolWt=ExactMolWt(Chem.MolFromSmiles(i))
-                    value_ped_tox=(10**(prediction_SVM_tox*-1)*1000)*MolWt
+                    value_ped_tox=(10**(y_pred_tox*-1)*1000)*MolWt
                     value_ped_tox=round(value_ped_tox[0], 4)
                     y_pred_con_tox.append(value_ped_tox)
                     cpd_AD_vs_tox.append(cpd_AD_vs_tox_r[0])
@@ -370,8 +394,8 @@ if files_option == 'MDL multiple SD file (*.sdf)':
                 inchi = str(Chem.MolToInchi(m))
                 struct.append(i)
                 if inchi in res:                    
-                    exp.append(str(res[inchi][0]['pchembl_value_mean']))
-                    std.append(round(res[inchi][0]['pchembl_value_std'],4))
+                    exp.append(round((res[inchi][0]['pchembl_value_mean']), 2))
+                    std.append(round((res[inchi][0]['pchembl_value_std']), 3))
                     chembl_id.append(str(res[inchi][0]['molecule_chembl_id']))
                     y_pred_con.append('see experimental value')
                     cpd_AD_vs.append('-')
@@ -383,8 +407,10 @@ if files_option == 'MDL multiple SD file (*.sdf)':
                     f_vs = [AllChem.GetMorganFingerprintAsBitVect(m, radius=2, nBits=1024, useFeatures=False, useChirality=False)]
                     X = rdkit_numpy_convert(f_vs)
                     #Predict activity                    
-                    prediction_SVM = load_model_SVM.predict(X)                                                         
-                    y_pred_con.append(round(float(prediction_SVM),3))
+                    prediction_RF = load_model_RF.predict(X)
+                    prediction_SVM = load_model_SVM.predict(X)
+                    y_pred=(prediction_RF+prediction_SVM)/2                                                         
+                    y_pred_con.append(round(float(y_pred),3))
                     # Estimination AD
                     neighbors_k_vs = pairwise_distances(x_tr, Y=X, n_jobs=-1)
                     neighbors_k_vs.sort(0)
@@ -417,10 +443,12 @@ if files_option == 'MDL multiple SD file (*.sdf)':
                     similarity_vs_tox = neighbors_k_vs_tox
                     cpd_value_vs_tox = similarity_vs_tox[0, :]
                     cpd_AD_vs_tox_r = np.where(cpd_value_vs_tox <= model_AD_limit_tox, "Inside AD", "Outside AD")
-
-                    prediction_SVM_tox = load_model_SVM_tox.predict(X_tox)                    
+                    prediction_SVM_tox = load_model_SVM_tox.predict(X_tox)
+                    prediction_GBR_tox = load_model_GBR_tox.predict(X_tox)
+                    y_pred_tox=(prediction_SVM_tox+prediction_GBR_tox)/2
+                    
                     MolWt=ExactMolWt(Chem.MolFromSmiles(i))
-                    value_ped_tox=(10**(prediction_SVM_tox*-1)*1000)*MolWt
+                    value_ped_tox=(10**(y_pred_tox*-1)*1000)*MolWt
                     value_ped_tox=round(value_ped_tox[0], 4)
                     y_pred_con_tox.append(value_ped_tox)
                     cpd_AD_vs_tox.append(cpd_AD_vs_tox_r[0])
